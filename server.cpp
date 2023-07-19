@@ -228,10 +228,12 @@ Account::Status Account::attemptLogin(const std::string &username, const std::st
         return loginFailed();
     }
 
-    if (status == blocked) {
+    if (status == blocked)
+    {
         std::cout << "pass check blocked.\n";
         return blocked;
     }
+    //
     status = logged_in;
     return status;
 }
@@ -276,11 +278,12 @@ Account::Status Account::loginFailed()
                 // Update the status of the account in the file
                 if (username == getUsername())
                 {
-                    outputFile.seekp(std::ios::beg); // Move the file pointer to the beginning of the current line
+                    outputFile.seekp(std::ios::beg);     // Move the file pointer to the beginning of the current line
                     outputFile << getUsername() << "\n"; // Overwrite the username
                     outputFile << getPassword() << "\n"; // Overwrite the password
-                    outputFile << getName() << "\n"; // Overwrite the name
-                    outputFile << "blocked" << "\n"; // Update the status to "blocked"
+                    outputFile << getName() << "\n";     // Overwrite the name
+                    outputFile << "blocked"
+                               << "\n"; // Update the status to "blocked"
                 }
                 outputFile.close();
                 break;
@@ -440,12 +443,10 @@ void ServerSocket::handleClient(int client_socket)
             else if (!token.compare(RESIGN_CODE))
             {
                 handleResignSignal(client_socket, ss, roomIndex, threadId);
-                // Close the client socket
-                ::close(client_socket);
-                break;
             }
             else if (!token.compare(LOGIN_CODE))
             {
+
                 handleLoginSignal(client_socket, ss);
             }
             // Reset the buffer
@@ -588,6 +589,9 @@ void ServerSocket::handleLeaveRoomSignal(int client_socket, std::stringstream &s
 
 void ServerSocket::handleLoginSignal(int client_socket, std::stringstream &ss)
 {
+    // debug
+    std::cout << "attempt see login\n";
+    //---------------
     std::string username, password, token, code, message;
 
     std::getline(ss, token, '\n');
@@ -603,12 +607,18 @@ void ServerSocket::handleLoginSignal(int client_socket, std::stringstream &ss)
     for (auto &account : accountList)
     {
         status = account.second.attemptLogin(username, password);
+        std::cout << "day la status: " << status << "\n" ;
+
         if (status != Account::Status::logged_out)
         {
             name = account.second.getName();
             break;
         }
     }
+    //debug
+    std::cout << "day la status: " << status << "\n" ;
+    std::cout << "day la status: " << Account::Stringify(status) << "\n" ;
+
     code.assign(LOGIN_CODE);
     message = code + '\n' + Account::Stringify(status) + '\n' + name + '\n';
     send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
@@ -842,128 +852,31 @@ int main()
     int server_so = server_socket.getServerSocket();
     struct sockaddr_in client_addr;
     socklen_t sin_size = sizeof(struct sockaddr_in);
-    int client_so[MAX_CLIENT];
-    std::map<int, int> connectedClients; // std::pair<client_socket, roomIndex>
+    // int client_so[MAX_CLIENT];
+    std::thread threadArray[MAX_CLIENT];
 
-    for (int i = 0; i < MAX_CLIENT; i++)
+    while (true)
     {
-        client_so[i] = 0;
-    }
+        int client_so = accept(server_so, (struct sockaddr *)&client_addr, &sin_size);
+        if (client_so == -1)
+        {
+            std::cerr << "Lỗi trong quá trình chấp nhận kết nối." << std::endl;
+            continue;
+        }
 
-    fd_set readfds;
-    fd_set writefds;
-    fd_set exceptfds;
-
-    while (1)
-    {
-        FD_ZERO(&readfds);
-        FD_ZERO(&writefds);
-        FD_ZERO(&exceptfds);
-
-        FD_SET(server_so, &readfds);
-
-        int max_fd = server_so;
+        std::cout << "New connection accepted " << inet_ntoa(client_addr.sin_addr) << std::endl;
 
         for (int i = 0; i < MAX_CLIENT; i++)
         {
-            int client_socket = client_so[i];
-
-            if (client_socket > 0)
+            if (!threadArray[i].joinable())
             {
-                FD_SET(client_socket, &readfds);
-                FD_SET(client_socket, &writefds);
-                FD_SET(client_socket, &exceptfds);
-            }
-
-            if (client_socket > max_fd)
-            {
-                max_fd = client_socket;
-            }
-        }
-
-        // Check if there are any sockets ready for I/O operations
-        int activity = select(max_fd + 1, &readfds, &writefds, &exceptfds, NULL);
-
-        // Check for closed connections
-        for (auto it = connectedClients.begin(); it != connectedClients.end();)
-        {
-            int client_socket = it->first;
-            int roomIndex = it->second;
-
-            if (FD_ISSET(client_socket, &exceptfds))
-            {
-                // Connection closed by the client
-                std::cout << "Connection closed by the client: " << client_socket << std::endl;
-                roomIndex = -1;
-
-                // Close the socket
-                ::close(client_socket);
-
-                // Remove the client from the connectedClients array
-                it = connectedClients.erase(it);
-            }
-            else
-            {
-                ++it;
-            }
-        }
-
-        if ((activity < 0) && (errno != EINTR))
-        {
-            server_socket.error("Select error");
-        }
-
-        // Check if there is a new connection
-        if (FD_ISSET(server_so, &readfds))
-        {
-            int new_socket = accept(server_so, (struct sockaddr *)&client_addr, &sin_size);
-
-            if (new_socket < 0)
-            {
-                server_socket.error("Accept failed");
-            }
-
-            std::cout << "New connection, socket fd: " << new_socket << ", ip: " << inet_ntoa(client_addr.sin_addr) << ", port: " << ntohs(client_addr.sin_port) << std::endl;
-
-            // Add new socket to array of client sockets
-            for (int i = 0; i < MAX_CLIENT; i++)
-            {
-                if (client_so[i] == 0)
-                {
-                    client_so[i] = new_socket;
-                    std::cout << "Adding to list of sockets as " << i << std::endl;
-                    break;
-                }
-            }
-        }
-
-        // Check for I/O operations on existing sockets
-        for (int i = 0; i < MAX_CLIENT; i++)
-        {
-            int client_socket = client_so[i];
-            int roomIndex = connectedClients[client_socket];
-            if (client_socket > 0 && FD_ISSET(client_socket, &readfds))
-            {
-                server_socket.handleClient(client_socket);
-                // Update the roomIndex in the connectedClients map
-                connectedClients[client_socket] = roomIndex;
-            }
-
-            // Check if the client socket was closed
-            if (client_socket > 0 && FD_ISSET(client_socket, &exceptfds))
-            {
-                std::cout << "Client socket closed: " << client_socket << std::endl;
-                // Close the client socket
-                ::close(client_socket);
-                // Remove the client socket from the client_so array
-                client_so[i] = -1;
-                // Remove the client socket from the connectedClients map
-                connectedClients.erase(client_socket);
+                threadArray[i] = std::thread([&]()
+                                             { server_socket.handleClient(client_so); });
+                threadArray[i].detach();
+                break;
             }
         }
     }
-
-    server_socket.close();
 
     return 0;
 }
