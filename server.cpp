@@ -13,18 +13,18 @@
 #include <map>
 #include <fstream>
 
-#define MAX_CLIENT 10
+#define MAX_CLIENT 100
 #define RECEIVE_BUFFER_SIZE 1024
-#define CREATE_ROOM_CODE "CREATE_ROOM"
-#define LEAVE_ROOM_CODE "LEAVE_ROOM"
-#define JOIN_ROOM_CODE "JOIN_ROOM"
-#define START_GAME_CODE "START_GAME"
+#define JOIN_ROOM_CODE "JOIN"
+#define CREATE_ROOM_CODE "CREATE"
+#define LEAVE_ROOM_CODE "LEAVE"
+#define START_GAME_CODE "START"
+#define NEW_GUEST_CODE "NEWGUEST"
+#define NEW_OWNER_CODE "NEWOWNER"
 #define MOVE_CODE "MOVE"
 #define READY_CODE "READY"
 #define RESIGN_CODE "RESIGN"
 #define LOGIN_CODE "LOGIN"
-#define NEW_OWNER_CODE "NEW_OWNER"
-#define NEW_GUEST_CODE "NEW_GUEST"
 
 class Room
 {
@@ -350,9 +350,7 @@ void ServerSocket::handleClient(int client_socket)
             else if (!token.compare(LEAVE_ROOM_CODE))
             {
                 handleLeaveRoomSignal(client_socket, ss, roomIndex, threadId);
-                // Close the client socket
-                ::close(client_socket);
-                break;
+                
             }
             else if (!token.compare(JOIN_ROOM_CODE))
             {
