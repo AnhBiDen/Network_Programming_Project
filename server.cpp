@@ -26,6 +26,9 @@
 #define RESIGN_CODE "RESIGN"
 #define LOGIN_CODE "LOGIN"
 
+std::ofstream outputFile("users.txt", std::ios::out | std::ios::in);
+std::ifstream inputFile("users.txt");
+
 class Room
 {
 public:
@@ -148,14 +151,21 @@ void Room::removeGuest()
     newGuest = true;
 }
 
-
 class Account
 {
 public:
-    enum Status {logged_out, logged_in, blocked, wrong_password};
+    enum Status
+    {
+        logged_out,
+        logged_in,
+        blocked,
+        wrong_password
+    };
     Account();
-    Account(std::string username, std::string password, std::string name,std::string status);
+    Account(std::string username, std::string password, std::string name, std::string status);
     std::string getName() const;
+    std::string getUsername() const;
+    std::string getPassword() const;
     Status attemptLogin(const std::string &username, const std::string &password);
     static std::string Stringify(Status status);
 
@@ -170,22 +180,24 @@ private:
     Status status;
     int failedAttemp = 0;
 };
-Account::Account(){
+Account::Account()
+{
 }
 
-Account::Account(std::string username, std::string password, std::string name, std::string status){
-  this->username.assign(username);
-  this->password.assign(password);
-  this->name.assign(name);
-//   this->status.assign(status);
-  
-  if (status == "logged_out")
-    this->status = logged_out;
-  else if (status == "logged_in")
-    this->status = logged_in;
-  else if (status == "blocked")
-    this->status = blocked;
-  failedAttemp = 0;
+Account::Account(std::string username, std::string password, std::string name, std::string status)
+{
+    this->username.assign(username);
+    this->password.assign(password);
+    this->name.assign(name);
+    //   this->status.assign(status);
+
+    if (status == "logged_out")
+        this->status = logged_out;
+    else if (status == "logged_in")
+        this->status = logged_in;
+    else if (status == "blocked")
+        this->status = blocked;
+    failedAttemp = 0;
 }
 
 std::string Account::getName() const
@@ -193,19 +205,33 @@ std::string Account::getName() const
     return name;
 }
 
+std::string Account::getUsername() const
+{
+    return username;
+}
+std::string Account::getPassword() const
+{
+    return password;
+}
+
 Account::Status Account::attemptLogin(const std::string &username, const std::string &password)
 {
     if (!checkUsername(username))
+    {
+        std::cout << "pass check user.\n";
         return logged_out;
+    }
 
     if (!checkPassword(password))
     {
+        std::cout << "pass check password.\n";
         return loginFailed();
     }
 
-    if (status == blocked)
+    if (status == blocked) {
+        std::cout << "pass check blocked.\n";
         return blocked;
-
+    }
     status = logged_in;
     return status;
 }
@@ -216,9 +242,54 @@ Account::Status Account::loginFailed()
     if (failedAttemp >= max_failed_attemp)
     {
         status = blocked;
-        return blocked;
+
+        // Update the account information in the users.txt file
+        // std::ofstream outputFile("users.txt", std::ios::out | std::ios::in);
+        if (!outputFile)
+        {
+            std::cout << "Error opening the file." << std::endl;
+            return blocked; // If failed to open the file, return blocked status but don't update the file
+        }
+
+        std::string line;
+        std::string username;
+        std::string password;
+        std::string name;
+        std::string accountStatus;
+        int lineCount = 0;
+        while (std::getline(inputFile, line))
+        {
+            switch (lineCount % 4)
+            {
+            case 0:
+                username = line;
+                break;
+            case 1:
+                password = line;
+                break;
+            case 2:
+                name = line;
+                break;
+            case 3:
+                accountStatus = line;
+
+                // Update the status of the account in the file
+                if (username == getUsername())
+                {
+                    outputFile.seekp(std::ios::beg); // Move the file pointer to the beginning of the current line
+                    outputFile << getUsername() << "\n"; // Overwrite the username
+                    outputFile << getPassword() << "\n"; // Overwrite the password
+                    outputFile << getName() << "\n"; // Overwrite the name
+                    outputFile << "blocked" << "\n"; // Update the status to "blocked"
+                }
+                outputFile.close();
+                break;
+            }
+            lineCount++;
+        }
     }
-    return wrong_password;
+
+    return (status == blocked) ? blocked : wrong_password;
 }
 
 std::string Account::Stringify(Status status)
@@ -243,7 +314,7 @@ std::string Account::Stringify(Status status)
     }
 }
 
-class ServerSocket : public Account
+class ServerSocket
 {
 public:
     ServerSocket();
@@ -262,7 +333,6 @@ public:
     void initializeAccountList();
     void error(std::string message);
     void error(std::string message, bool isThread);
-
     std::string gen_random(const int len);
     int coin_flip();
     int getServerSocket() const
@@ -350,7 +420,6 @@ void ServerSocket::handleClient(int client_socket)
             else if (!token.compare(LEAVE_ROOM_CODE))
             {
                 handleLeaveRoomSignal(client_socket, ss, roomIndex, threadId);
-                
             }
             else if (!token.compare(JOIN_ROOM_CODE))
             {
@@ -700,7 +769,7 @@ void ServerSocket::handleRoomStatus(int client_socket, int &roomIndex, std::thre
 
 void ServerSocket::initializeAccountList()
 {
-    std::ifstream inputFile("users.txt");
+    // std::ifstream inputFile("users.txt");
 
     if (!inputFile)
     {
@@ -729,7 +798,7 @@ void ServerSocket::initializeAccountList()
             break;
         case 3:
             status = line;
-            accountList.emplace(username, Account(username, password, name, status) );
+            accountList.emplace(username, Account(username, password, name, status));
             break;
         }
         lineCount++;
@@ -762,11 +831,10 @@ int ServerSocket::coin_flip()
     return rand() % 2;
 }
 
-
 void handle_client(int client_socket);
 std::string gen_random(const int len);
 std::map<std::string, Account> initializeAccountList();
-void displayAccountList(const std::map<std::string, Account>& accountList);
+void displayAccountList(const std::map<std::string, Account> &accountList);
 
 int main()
 {

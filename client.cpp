@@ -457,9 +457,18 @@ int main()
                 std::cout << "Đăng nhập thành công.\n";
                 break;
             }
-            else if (loginStatus == "failed")
+            else if (loginStatus == "blocked")
             {
-                std::cout << "Đăng nhập không thành công. Vui lòng kiểm tra tên người dùng và mật khẩu.\n";
+                std::cout << "Tài khoản đã bị khoá.\n";
+                break;
+            } 
+            else if (loginStatus == "wrong_password") 
+            {
+                std::cout << "Sai mật khẩu.\n";
+                break;
+            } else 
+            {
+                std::cout << "Vui lòng đăng nhập lại\n";
                 break;
             }
         }
