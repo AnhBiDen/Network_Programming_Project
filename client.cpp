@@ -23,6 +23,7 @@
 #define READY_CODE "READY"
 #define RESIGN_CODE "RESIGN"
 #define LOGIN_CODE "LOGIN"
+#define REGISTER_CODE "REGISTER"
 
 class ClientSocket
 {
@@ -43,10 +44,14 @@ public:
     bool getRoomFull() { return roomFull; };
     bool getIsOwner() { return isOwner; };
     bool getIsGuestReady() { return isGuestReady; };
+    bool getResponseReceived() { return responseReceived; };
+    bool setResponseReceived(bool reply) { this->responseReceived = reply; };
+
     // MUTATOR
     void setRoomCode(std::string newRoomCode);
     void setUsername(std::string username) { this->username = username; };
     void setPassword(std::string password) { this->password = password; };
+    void setName(std::string name) { this->name = name; };
 
     void sendLoginSignal();
     void handleLoginSignal(std::string reply, std::string name);
@@ -64,6 +69,8 @@ public:
     void handleResignSignal();
     void handleNewGuest(std::string newGuestName);
     void handleNewOwner(std::string newGuestName);
+    void sendRegisterSignal();
+    void handleRegisterSignal(std::string reply);
     bool isRoomFull() { return opponentName != ""; };
 
 private:
@@ -78,6 +85,7 @@ private:
     bool roomFull;
     bool isOwner;
     bool isGuestReady;
+    bool responseReceived = false;
 };
 
 std::string gen_random(const int len)
@@ -316,107 +324,139 @@ void ClientSocket::handleResignSignal()
 
 void ClientSocket::handleBufferRead()
 {
-  int bytes_received = 0;
-  char buffer[RECEIVE_BUFFER_SIZE];
-  std::string token;
+    int bytes_received = 0;
+    char buffer[RECEIVE_BUFFER_SIZE];
+    std::string token;
 
-  do
-  {
-    bytes_received = recv(so, buffer, RECEIVE_BUFFER_SIZE, 0);
-    int count = 0;
-    //debug
-    std::cout << "day là byte " << count << "  " << bytes_received << "\n";
-    count++;
-    std::cout << "day la count" << count << "\n";
-    if (bytes_received > 0)
+    do
     {
-      // Process the received data
-      std::stringstream ss(buffer);
-      std::getline(ss, token, '\n');
-      std::cout << "Token: " << token << '\n';
-      if (!token.compare(CREATE_ROOM_CODE))
-      {
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        handleCreateRoom(token);
-      }
-      else if (!token.compare(LEAVE_ROOM_CODE))
-      {
-        handleLeaveRoom();
-      }
-      else if (!token.compare(JOIN_ROOM_CODE))
-      {
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        std::string token2;
-        std::getline(ss, token2, '\n');
-        handleJoinRoom(token, token2);
-      }
-      else if (!token.compare(NEW_GUEST_CODE))
-      {
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        handleNewGuest(token);
-      }
-      else if (!token.compare(NEW_OWNER_CODE))
-      {
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        handleNewOwner(token);
-      }
-      else if (!token.compare(START_GAME_CODE))
-      {
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        handleStartGame(token);
-      }
-      else if (!token.compare(MOVE_CODE))
-      {
-        int moveFrom, moveTo;
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        moveFrom = std::stoi(token);
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        moveTo = std::stoi(token);
-        // handleMoveSignal(moveFrom, moveTo);
-      }
-      else if (!token.compare(READY_CODE))
-      {
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        handleReadySignal(std::stoi(token));
-      }
-      else if (!token.compare(RESIGN_CODE))
-      {
-        handleResignSignal();
-      }
-      else if (!token.compare(LOGIN_CODE))
-      {
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        std::string reply = token;
-        std::getline(ss, token, '\n');
-        std::cout << "Token: " << token << '\n';
-        handleLoginSignal(reply, token);
-      }
+        bytes_received = recv(so, buffer, RECEIVE_BUFFER_SIZE, 0);
+
+        if (bytes_received > 0)
+        {
+            responseReceived = true;
+            // Process the received data
+            std::stringstream ss(buffer);
+            std::getline(ss, token, '\n');
+            std::cout << "Token: " << token << '\n';
+            if (!token.compare(CREATE_ROOM_CODE))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleCreateRoom(token);
+            }
+            else if (!token.compare(LEAVE_ROOM_CODE))
+            {
+                handleLeaveRoom();
+            }
+            else if (!token.compare(JOIN_ROOM_CODE))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                std::string token2;
+                std::getline(ss, token2, '\n');
+                handleJoinRoom(token, token2);
+            }
+            else if (!token.compare(NEW_GUEST_CODE))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleNewGuest(token);
+            }
+            else if (!token.compare(NEW_OWNER_CODE))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleNewOwner(token);
+            }
+            else if (!token.compare(START_GAME_CODE))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleStartGame(token);
+            }
+            else if (!token.compare(MOVE_CODE))
+            {
+                int moveFrom, moveTo;
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                moveFrom = std::stoi(token);
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                moveTo = std::stoi(token);
+                // handleMoveSignal(moveFrom, moveTo);
+            }
+            else if (!token.compare(READY_CODE))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleReadySignal(std::stoi(token));
+            }
+            else if (!token.compare(RESIGN_CODE))
+            {
+                handleResignSignal();
+            }
+            else if (!token.compare(LOGIN_CODE))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                std::string reply = token;
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleLoginSignal(reply, token);
+            }
+            else if (!token.compare(REGISTER_CODE))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                std::string reply = token;
+                handleRegisterSignal(reply);
+            }
+        }
+        else if (bytes_received == 0)
+        {
+            ClientSocket::error("Connection closed by the server");
+            break;
+        }
+        else
+        {
+            if (errno != EWOULDBLOCK)
+            {
+                ClientSocket::error("Failed to receive data. Error code");
+                break;
+            }
+            // No data available in the receive buffer
+            // Do other work or sleep for a while before calling recv() again
+        }
+    } while (bytes_received > 0);
+}
+
+void ClientSocket::sendRegisterSignal()
+{
+    std::string message;
+    std::string code;
+
+    code.assign(REGISTER_CODE);
+    message = code + '\n' + username + '\n' + password + "\n" + name + '\n';
+    if (send(so, message.c_str(), message.length(), 0) == -1)
+        error("Error sending message to server. Exiting\n");
+}
+
+void ClientSocket::handleRegisterSignal(std::string reply)
+{
+    loginStatus = reply;
+    if (reply == "registered")
+    {
+        
     }
-    else if (bytes_received == 0)
+    else if (reply == "username_exists")
     {
-      ClientSocket::error("Connection closed by the server");
-      break;
+        
     }
     else
     {
-      if (errno != EWOULDBLOCK)
-      {
-        ClientSocket::error("Failed to receive data. Error code");
-        break;
-      }
-      // No data available in the receive buffer
-      // Do other work or sleep for a while before calling recv() again
+        std::cout << "Đăng ký thất bại. Vui lòng thử lại sau.\n";
     }
-  } while (bytes_received > 0);
 }
 
 bool quit = false, muted = true, start = false, isTyping = false;
@@ -431,7 +471,8 @@ int main()
     while (true)
     {
         std::cout << "1. Đăng nhập\n";
-        std::cout << "2. Thoát\n";
+        std::cout << "2. Đăng ký\n";
+        std::cout << "3. Thoát\n";
         std::cout << "Chọn một lựa chọn: ";
         std::getline(std::cin, input);
 
@@ -450,6 +491,22 @@ int main()
         }
         else if (input == "2")
         {
+            std::string username, password, name;
+            std::cout << "Nhập tên người dùng: ";
+            std::getline(std::cin, username);
+            std::cout << "Nhập mật khẩu: ";
+            std::getline(std::cin, password);
+            std::cout << "Nhập tên hiển thị: ";
+            std::getline(std::cin, name);
+
+            // Gửi thông tin đăng ký tới server
+            clientSocket.setUsername(username);
+            clientSocket.setPassword(password);
+            clientSocket.setName(name);
+            clientSocket.sendRegisterSignal();
+        }
+        else if (input == "3")
+        {
             // Thoát khỏi chương trình
             break;
         }
@@ -461,24 +518,46 @@ int main()
 
         while (true)
         {
-            clientSocket.handleBufferRead();
+            bool responseReceived = clientSocket.getResponseReceived();
+            while (!responseReceived)
+            {
+                // Wait until a complete response is received
+                clientSocket.handleBufferRead();
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                responseReceived = clientSocket.getResponseReceived();
+            }
 
-            std::string loginStatus = clientSocket.getLoginStatus();
-            std::cout << "thang thai " << loginStatus << "\n";
+            // Reset the flag for the next response
+            responseReceived = false;
+            clientSocket.setResponseReceived(responseReceived);
 
-            if (loginStatus == "logged_in")
+            // Process the server response
+            std::string isStatus = clientSocket.getLoginStatus();
+            std::cout << "thang thai " << isStatus << "\n";
+
+            if (isStatus == "logged_in")
             {
                 std::cout << "Đăng nhập thành công.\n";
                 break;
             }
-            else if (loginStatus == "blocked")
+            else if (isStatus == "blocked")
             {
                 std::cout << "Tài khoản đã bị khoá.\n";
                 break;
             }
-            else if (loginStatus == "wrong_password")
+            else if (isStatus == "wrong_password")
             {
                 std::cout << "Sai mật khẩu.\n";
+                break;
+            }
+            else if (isStatus == "registered")
+            {
+                std::cout << "Đăng ký thành công.\n";
+                break;
+            }
+            else if (isStatus == "username_exists")
+            {
+                std::cout << "Tên người dùng đã tồn tại. Vui lòng chọn tên người dùng khác.\n";
                 break;
             }
             else

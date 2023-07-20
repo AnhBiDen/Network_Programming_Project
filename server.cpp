@@ -25,8 +25,9 @@
 #define READY_CODE "READY"
 #define RESIGN_CODE "RESIGN"
 #define LOGIN_CODE "LOGIN"
+#define REGISTER_CODE "REGISTER"
 
-std::ofstream outputFile("users.txt", std::ios::out | std::ios::in);
+std::ofstream outputFile("users.txt", std::ios::app | std::ios::ate);
 std::ifstream inputFile("users.txt");
 
 class Room
@@ -159,7 +160,9 @@ public:
         logged_out,
         logged_in,
         blocked,
-        wrong_password
+        wrong_password,
+        registered,
+        username_exists
     };
     Account();
     Account(std::string username, std::string password, std::string name, std::string status);
@@ -218,22 +221,18 @@ Account::Status Account::attemptLogin(const std::string &username, const std::st
 {
     if (!checkUsername(username))
     {
-        std::cout << "pass check user.\n";
         return logged_out;
     }
 
     if (!checkPassword(password))
     {
-        std::cout << "pass check password.\n";
         return loginFailed();
     }
 
     if (status == blocked)
     {
-        std::cout << "pass check blocked.\n";
         return blocked;
     }
-    //
     status = logged_in;
     return status;
 }
@@ -246,8 +245,9 @@ Account::Status Account::loginFailed()
         status = blocked;
 
         // Update the account information in the users.txt file
-        // std::ofstream outputFile("users.txt", std::ios::out | std::ios::in);
-        if (!outputFile)
+        std::ofstream outChangefile("users.txt", std::ios::app);
+        std::ifstream inChangefile("users.txt");
+        if (!outChangefile || !inChangefile)
         {
             std::cout << "Error opening the file." << std::endl;
             return blocked; // If failed to open the file, return blocked status but don't update the file
@@ -259,7 +259,7 @@ Account::Status Account::loginFailed()
         std::string name;
         std::string accountStatus;
         int lineCount = 0;
-        while (std::getline(inputFile, line))
+        while (std::getline(inChangefile, line))
         {
             switch (lineCount % 4)
             {
@@ -278,14 +278,14 @@ Account::Status Account::loginFailed()
                 // Update the status of the account in the file
                 if (username == getUsername())
                 {
-                    outputFile.seekp(std::ios::beg);     // Move the file pointer to the beginning of the current line
-                    outputFile << getUsername() << "\n"; // Overwrite the username
-                    outputFile << getPassword() << "\n"; // Overwrite the password
-                    outputFile << getName() << "\n";     // Overwrite the name
-                    outputFile << "blocked"
-                               << "\n"; // Update the status to "blocked"
+                    outChangefile.seekp(std::ios::cur);
+                    outChangefile << getUsername() << std::endl;// Overwrite the username
+                    outChangefile << getPassword() << std::endl;// Overwrite the password
+                    outChangefile << getName() << std::endl;// Overwrite the name
+                    outChangefile << "blocked" << std::endl;// Update the status to "blocked"
                 }
-                outputFile.close();
+                outChangefile.close();
+                inChangefile.close();
                 break;
             }
             lineCount++;
@@ -311,6 +311,12 @@ std::string Account::Stringify(Status status)
     case wrong_password:
         return "wrong_password";
         break;
+    case registered:
+        return "registered";
+        break;
+    case username_exists:
+        return "username_exists";
+        break;
     default:
         return "";
         break;
@@ -333,6 +339,8 @@ public:
     void handleMoveSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId);
     void handleResignSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId);
     void handleRoomStatus(int client_socket, int &roomIndex, std::thread::id &threadId);
+    void handleRegisterSignal(int client_socket, std::stringstream &ss);
+
     void initializeAccountList();
     void error(std::string message);
     void error(std::string message, bool isThread);
@@ -448,6 +456,10 @@ void ServerSocket::handleClient(int client_socket)
             {
 
                 handleLoginSignal(client_socket, ss);
+            }
+            else if (!token.compare(REGISTER_CODE))
+            {
+                handleRegisterSignal(client_socket, ss);
             }
             // Reset the buffer
             memset(buffer, 0, RECEIVE_BUFFER_SIZE);
@@ -589,9 +601,7 @@ void ServerSocket::handleLeaveRoomSignal(int client_socket, std::stringstream &s
 
 void ServerSocket::handleLoginSignal(int client_socket, std::stringstream &ss)
 {
-    // debug
-    std::cout << "attempt see login\n";
-    //---------------
+
     std::string username, password, token, code, message;
 
     std::getline(ss, token, '\n');
@@ -607,7 +617,6 @@ void ServerSocket::handleLoginSignal(int client_socket, std::stringstream &ss)
     for (auto &account : accountList)
     {
         status = account.second.attemptLogin(username, password);
-        std::cout << "day la status: " << status << "\n" ;
 
         if (status != Account::Status::logged_out)
         {
@@ -615,12 +624,10 @@ void ServerSocket::handleLoginSignal(int client_socket, std::stringstream &ss)
             break;
         }
     }
-    //debug
-    std::cout << "day la status: " << status << "\n" ;
-    std::cout << "day la status: " << Account::Stringify(status) << "\n" ;
 
     code.assign(LOGIN_CODE);
     message = code + '\n' + Account::Stringify(status) + '\n' + name + '\n';
+    std::cout << "token: " << message << "\n";
     send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
 }
 
@@ -841,6 +848,44 @@ int ServerSocket::coin_flip()
     return rand() % 2;
 }
 
+void ServerSocket::handleRegisterSignal(int client_socket, std::stringstream &ss)
+{
+    std::string token, code, message;
+
+    std::getline(ss, token, '\n');
+    std::string username = token;
+    std::getline(ss, token, '\n');
+    std::string password = token;
+    std::getline(ss, token, '\n');
+    std::string name = token;
+    Account::Status status;
+    // Check if the username is available (not already taken)
+    if (accountList.find(username) != accountList.end())
+    {
+        status = Account::Status::username_exists;
+        // Username already exists, send a response to the client
+        code.assign(REGISTER_CODE);
+        message = code + '\n' + Account::Stringify(status) + "\n";
+        send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
+        return;
+    }
+
+    // Username is available, create a new account and add it to the account list
+    accountList.emplace(username, Account(username, password, name, "logged_out"));
+    status = Account::Status::registered;
+    // Update the users.txt file with the new account information
+    outputFile << username << std::endl;
+    outputFile << password << std::endl;
+    outputFile << name << std::endl;
+    outputFile << "logged_out" << std::endl;
+    outputFile.seekp(0, std::ios::end);
+    // Send a success response to the client
+    code.assign(REGISTER_CODE);
+    message = code + '\n' + Account::Stringify(status) + "\n";
+    std::cout << "token: " << message << "\n";
+    send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
+}
+
 void handle_client(int client_socket);
 std::string gen_random(const int len);
 std::map<std::string, Account> initializeAccountList();
@@ -877,6 +922,5 @@ int main()
             }
         }
     }
-
     return 0;
 }
