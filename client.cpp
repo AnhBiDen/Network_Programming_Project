@@ -46,8 +46,15 @@ public:
     bool getIsGuestReady() { return isGuestReady; };
     bool getResponseReceived() { return responseReceived; };
     bool setResponseReceived(bool reply) { this->responseReceived = reply; };
-
+    bool getYourturn(std::string player)
+    {
+        if (player == "Owner")
+            return turnOwner;
+        else if (player == "Guest")
+            return turnGuest;
+    };
     // MUTATOR
+    void setYourturn(std::string player, bool reply);
     void setRoomCode(std::string newRoomCode);
     void setUsername(std::string username) { this->username = username; };
     void setPassword(std::string password) { this->password = password; };
@@ -62,6 +69,8 @@ public:
     void sendLeaveRoom();
     void handleLeaveRoom();
     void sendStartGame();
+    void sendAnswer();
+    void getQuestion();
     void handleStartGame(std::string side);
     void sendReadySignal();
     void handleReadySignal(int readyStatus);
@@ -86,6 +95,9 @@ private:
     bool isOwner;
     bool isGuestReady;
     bool responseReceived = false;
+    bool start = false;
+    bool turnOwner = false;
+    bool turnGuest = false;
 };
 
 std::string gen_random(const int len)
@@ -264,15 +276,65 @@ void ClientSocket::sendStartGame()
 
 void ClientSocket::handleStartGame(std::string side)
 {
+    if (side == "first")
+        this->turnOwner = true;
+    else if (side == "second")
+        this->turnGuest = true;
+}
+
+void handleQuestion(std::string messages)
+{
+    std::cout << "Câu hỏi: " << messages << std::endl;
+}
+
+void ClientSocket::getQuestion() {
+    std::string code;
+    std::string message;
+    code.assign("QUESTION");
+
+    message = code + '\n';
+    if (send(so, message.c_str(), message.length(), 0) == -1)
+        error("Error sending message to server. Exiting\n");
+}
+
+void ClientSocket::setYourturn(std::string player, bool reply)
+{
+    if (player == "Owner")
+        this->turnOwner = true;
+    else if (player == "Guest")
+        this->turnGuest = true;
+}
+
+void ClientSocket::sendAnswer()
+{
+    std::string code;
+    std::string message;
+    code.assign("ANSWER");
+
+    std::string answer;
+    std::getline(std::cin, answer);
+    message = code + "\n" + answer + '\n';
+    if (send(so, message.c_str(), message.length(), 0) == -1)
+        error("Error sending message to server. Exiting\n");
+}
+
+void handleAnswer(std::string reply, std::string answer)
+{
+    if (reply == "Correct")
+    {
+        std::cout << "Correct !!" << std::endl;
+    }
+    else if (reply == "Wrong")
+    {
+        std::cout << "Wrong !!" << std::endl;
+        std::cout << "The correct is " << answer << std::endl;
+    }
 }
 
 void ClientSocket::handleNewGuest(std::string newGuestName)
 {
     opponentName.assign(newGuestName);
-    if (newGuestName == "")
-    {
-        isGuestReady = false;
-    }
+    isGuestReady = true;
 }
 
 void ClientSocket::handleNewOwner(std::string newOwnerName)
@@ -373,7 +435,10 @@ void ClientSocket::handleBufferRead()
             {
                 std::getline(ss, token, '\n');
                 std::cout << "Token: " << token << '\n';
-                handleStartGame(token);
+                std::string playSide = token;
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleStartGame(playSide);
             }
             else if (!token.compare(MOVE_CODE))
             {
@@ -412,6 +477,21 @@ void ClientSocket::handleBufferRead()
                 std::string reply = token;
                 handleRegisterSignal(reply);
             }
+            else if (!token.compare("QUESTION"))
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleQuestion(token);
+            }
+            else if (!token.compare("ANSWER")) 
+            {
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                std::string reply = token;
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << '\n';
+                handleAnswer(reply, token);
+            }
         }
         else if (bytes_received == 0)
         {
@@ -447,11 +527,9 @@ void ClientSocket::handleRegisterSignal(std::string reply)
     loginStatus = reply;
     if (reply == "registered")
     {
-        
     }
     else if (reply == "username_exists")
     {
-        
     }
     else
     {
@@ -467,7 +545,8 @@ int main()
 {
     ClientSocket clientSocket("127.0.0.1", 5500);
     std::string input;
-
+    bool ownerReady = false;
+    bool guestReady = false;
     while (true)
     {
         std::cout << "1. Đăng nhập\n";
@@ -518,6 +597,7 @@ int main()
 
         while (true)
         {
+            
             bool responseReceived = clientSocket.getResponseReceived();
             while (!responseReceived)
             {
@@ -581,6 +661,43 @@ int main()
                 {
                     // Gửi yêu cầu tạo phòng tới server
                     clientSocket.sendCreateRoom();
+                    ownerReady = true;
+                    bool responseReceived = clientSocket.getResponseReceived();
+
+                    while (!responseReceived)
+                    {
+                        // Wait until a complete response is received
+                        clientSocket.handleBufferRead();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        responseReceived = clientSocket.getResponseReceived();
+                    }
+
+                    // Reset the flag for the next response
+                    responseReceived = false;
+                    clientSocket.setResponseReceived(responseReceived);
+                    std::cout << "Bạn đang ở trong phòng \n";
+                    while (1)
+                    {
+                        bool responseReceived = clientSocket.getResponseReceived();
+
+                        while (!responseReceived)
+                        {
+                            // Wait until a complete response is received
+                            clientSocket.handleBufferRead();
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            responseReceived = clientSocket.getResponseReceived();
+                        }
+
+                        // Reset the flag for the next response
+                        responseReceived = false;
+                        clientSocket.setResponseReceived(responseReceived);
+                        std::cout << "trang thai phong: " << clientSocket.getIsOwner() << clientSocket.isRoomFull() << clientSocket.getIsGuestReady() << std::endl;
+                        if (clientSocket.getIsOwner() && clientSocket.getIsGuestReady())
+                        {
+                            clientSocket.sendStartGame();
+                            break;
+                        }
+                    }
                 }
                 else if (input == "2")
                 {
@@ -591,6 +708,34 @@ int main()
                     // Gửi yêu cầu tham gia phòng tới server
                     clientSocket.setRoomCode(roomCode);
                     clientSocket.sendJoinRoom();
+
+                    bool responseReceived = clientSocket.getResponseReceived();
+
+                    while (!responseReceived)
+                    {
+                        // Wait until a complete response is received
+                        clientSocket.handleBufferRead();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        responseReceived = clientSocket.getResponseReceived();
+                    }
+
+                    // Reset the flag for the next response
+                    responseReceived = false;
+                    clientSocket.setResponseReceived(responseReceived);
+                    clientSocket.sendReadySignal();
+
+                    // while (!responseReceived)
+                    // {
+                    //     // Wait until a complete response is received
+                    //     clientSocket.handleBufferRead();
+                    //     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    //     responseReceived = clientSocket.getResponseReceived();
+                    // }
+
+                    // // Reset the flag for the next response
+                    // responseReceived = false;
+                    // clientSocket.setResponseReceived(responseReceived);
+                    // std::cout << "Bạn đang ở trong phòng \n";
                 }
                 else if (input == "3")
                 {
@@ -603,36 +748,44 @@ int main()
                     std::cout << "Lựa chọn không hợp lệ. Vui lòng chọn lại.\n";
                 }
 
-                // Continuously handle server responses while waiting for user input
+                // Wait until a complete response is received
+                clientSocket.handleBufferRead();
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
                 while (true)
                 {
-                    clientSocket.handleBufferRead();
 
-                    // Check if the room creation or joining was successful
-                    if (clientSocket.getRoomCode() != "")
+                    clientSocket.getQuestion();
+                    bool responseReceived = clientSocket.getResponseReceived();
+
+                    while (!responseReceived)
                     {
-                        std::cout << "Thành công. Mã phòng của bạn: " << clientSocket.getRoomCode() << "\n";
-                        break;
-                    }
 
-                    // Check if the room was found or full during join request
-                    if (clientSocket.getRoomFoundState())
+                        // Wait until a complete response is received
+                        clientSocket.handleBufferRead();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        responseReceived = clientSocket.getResponseReceived();
+                    }
+                    bool turn = clientSocket.getYourturn(clientSocket.getIsOwner() ? "Owner" : "Guest");
+                    if (turn)
                     {
-                        if (clientSocket.getRoomFull())
-                        {
-                            std::cout << "Phòng đã đầy.\n";
-                        }
-                        else
-                        {
-                            std::cout << "Đã tham gia phòng.\n";
-                        }
-                        break;
+                        std::cout << "You are the " << clientSocket.getPlayerName() << " turn.\n";
+                        std::cout << "Enter the answer: " << std::endl;
+                        clientSocket.sendAnswer();
+                    } else {
+                        // std::cout << "Not your turn!!\n";
+                        std::cout << "You are the " << clientSocket.getPlayerName() << " turn.\n";
+                        std::cout << "Enter the answer: " << std::endl;
+                        clientSocket.sendAnswer();
                     }
-
-                    // Handle other cases if needed
-
-                    // Sleep for a while before checking the server responses again
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    while (!responseReceived)
+                    {
+                        
+                        // Wait until a complete response is received
+                        clientSocket.handleBufferRead();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        responseReceived = clientSocket.getResponseReceived();
+                    }
                 }
             }
         }

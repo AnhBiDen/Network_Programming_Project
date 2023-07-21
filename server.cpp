@@ -4,6 +4,8 @@
 #include <sstream>
 #include <cstdlib>
 #include <ctime>
+#include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -12,6 +14,12 @@
 #include <thread>
 #include <map>
 #include <fstream>
+#include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+
+using namespace std;
 
 #define MAX_CLIENT 100
 #define RECEIVE_BUFFER_SIZE 1024
@@ -29,6 +37,27 @@
 
 std::ofstream outputFile("users.txt", std::ios::app | std::ios::ate);
 std::ifstream inputFile("users.txt");
+
+std::vector<std::pair<std::string, std::string>> load_questions(const std::string &file_path)
+{
+    std::vector<std::pair<std::string, std::string>> questions;
+    std::ifstream file(file_path);
+    if (!file.is_open())
+    {
+        std::cerr << "Không thể mở file " << file_path << std::endl;
+        return questions;
+    }
+
+    std::string question;
+    std::string answer;
+    while (std::getline(file, question) && std::getline(file, answer))
+    {
+        questions.emplace_back(question, answer);
+    }
+
+    file.close();
+    return questions;
+}
 
 class Room
 {
@@ -48,42 +77,35 @@ public:
     bool getOwnerSide() { return ownerSide; };
     std::string getOwnerName() { return ownerName; };
     std::string getGuestName() { return guestName; };
-    int getOwnerMoveFrom() { return ownerMoveFrom; };
-    int getOwnerMoveTo() { return ownerMoveTo; };
-    int getGuestMoveFrom() { return guestMoveFrom; };
-    int getGuestMoveTo() { return guestMoveTo; };
-    bool availableGuestMove() { return guestMoveFrom != -1; };
-    bool availableOwnerMove() { return ownerMoveFrom != -1; };
     bool getGuestReady() { return isGuestReady; };
+    bool getOwnerReady() { return isOwnerReady; }
     bool getNewGuestReady() { return newGuestReady; };
     bool getOwnerResign() { return ownerResign; };
     bool getGuestResign() { return guestResign; };
 
     // MUTATOR
+    int getOwnerID() { return ownerID; };
+    int getGuestID() { return guestID; };
     void setRoomOccupied(bool b) { isOccupied = b; };
     void setRoomCode(std::string roomCode) { this->roomCode = roomCode; };
-    void setOwner(std::thread::id owner, std::string ownerName);
-    void setGuest(std::thread::id guest, std::string guestName);
+    void setOwner(std::thread::id owner, std::string ownerName, int client_socket);
+    void setGuest(std::thread::id guest, std::string guestName, int client_socket);
     void setNewGuestState(bool state) { newGuest = state; };
     void setNewOwnerState(bool state) { newOwner = state; };
     void setGameStarting(bool state) { isGameStarting = state; };
     void setOwnerSide(bool side) { ownerSide = side; };
-    void setGuestMove(int moveFrom, int moveTo)
-    {
-        guestMoveFrom = moveFrom;
-        guestMoveTo = moveTo;
-    };
-    void setOwnerMove(int moveFrom, int moveTo)
-    {
-        ownerMoveFrom = moveFrom;
-        ownerMoveTo = moveTo;
-    };
     void removeOwner();
     void removeGuest();
     void setGuestReady(bool isGuestReady) { this->isGuestReady = isGuestReady; };
+    void setOwnerReady(bool isOwnerReady) { this->isOwnerReady = isOwnerReady; };
     void setNewGuestReady(bool newGuestReady) { this->newGuestReady = newGuestReady; };
     void setGuestResign(bool guestResign) { this->guestResign = guestResign; };
     void setOwnerResign(bool ownerResign) { this->ownerResign = ownerResign; };
+    // thay đổi
+    std::mutex roomMutex;
+    std::condition_variable cvGuestJoin;
+    std::condition_variable cvGuestReady;
+    bool isOwnerTurn;
 
 private:
     std::string roomCode;
@@ -91,39 +113,46 @@ private:
     std::string ownerName = "";
     std::thread::id guest;
     std::string guestName = "";
-    int ownerMoveFrom = -1;
-    int ownerMoveTo = -1;
-    int guestMoveFrom = -1;
-    int guestMoveTo = -1;
     bool ownerSide;
     bool isOccupied;
     bool isGameStarting;
     bool isGuestReady;
+    bool isOwnerReady = true;
     bool ownerResign;
     bool guestResign;
     bool newGuest, newOwner, newGuestReady;
+    int ownerID;
+    int guestID;
 };
 
 Room::Room()
 {
     isOccupied = false;
+    isOwnerTurn = true;
 }
 
 Room::~Room()
 {
 }
 
-void Room::setOwner(std::thread::id owner, std::string ownerName)
+void Room::setOwner(std::thread::id owner, std::string ownerName, int client_socket)
 {
     this->owner = owner;
     this->ownerName = ownerName;
+    this->ownerID = client_socket;
 }
 
-void Room::setGuest(std::thread::id guest, std::string guestName)
+void Room::setGuest(std::thread::id guest, std::string guestName, int client_socket)
 {
+    std::unique_lock<std::mutex> lock(roomMutex);
+
     this->guest = guest;
     this->guestName = guestName;
+    this->guestID = client_socket;
     newGuest = true;
+
+    // Notify all waiting threads about the guest joining
+    cvGuestJoin.notify_all();
 }
 
 void Room::removeOwner()
@@ -242,54 +271,31 @@ Account::Status Account::loginFailed()
     failedAttemp++;
     if (failedAttemp >= max_failed_attemp)
     {
+        char username[256];
+        for (int i = 0; i < getUsername().length(); i++)
+            username[i] = getUsername()[i];
         status = blocked;
 
-        // Update the account information in the users.txt file
-        std::ofstream outChangefile("users.txt", std::ios::app);
-        std::ifstream inChangefile("users.txt");
-        if (!outChangefile || !inChangefile)
+        FILE *f = fopen("users.txt", "r");
+        int row = 0;
+        char string[256][256];
+        while (!feof(f))
         {
-            std::cout << "Error opening the file." << std::endl;
-            return blocked; // If failed to open the file, return blocked status but don't update the file
+            fscanf(f, "%s", string[row]);
+            row++;
         }
-
-        std::string line;
-        std::string username;
-        std::string password;
-        std::string name;
-        std::string accountStatus;
-        int lineCount = 0;
-        while (std::getline(inChangefile, line))
+        fclose(f);
+        for (int i = 0; i <= row; i++)
         {
-            switch (lineCount % 4)
-            {
-            case 0:
-                username = line;
-                break;
-            case 1:
-                password = line;
-                break;
-            case 2:
-                name = line;
-                break;
-            case 3:
-                accountStatus = line;
-
-                // Update the status of the account in the file
-                if (username == getUsername())
-                {
-                    outChangefile.seekp(std::ios::cur);
-                    outChangefile << getUsername() << std::endl;// Overwrite the username
-                    outChangefile << getPassword() << std::endl;// Overwrite the password
-                    outChangefile << getName() << std::endl;// Overwrite the name
-                    outChangefile << "blocked" << std::endl;// Update the status to "blocked"
-                }
-                outChangefile.close();
-                inChangefile.close();
-                break;
-            }
-            lineCount++;
+            if (!strcmp(string[i], username))
+                strcpy(string[i + 3], "blocked");
         }
+        FILE *g = fopen("users.txt", "w");
+        for (int i = 0; i <= row; i++)
+        {
+            fprintf(f, "%s\n", string[i]);
+        }
+        fclose(g);
     }
 
     return (status == blocked) ? blocked : wrong_password;
@@ -329,17 +335,21 @@ public:
     ServerSocket();
     ~ServerSocket();
     void close();
-    void handleClient(int client_socket);
+    void handleClient(int client_socket, int *count);
     void handleCreateRoomSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId);
     void handleJoinRoomSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId);
     void handleLeaveRoomSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId);
     void handleLoginSignal(int client_socket, std::stringstream &ss);
     void handleReadySignal(int client_socket, std::stringstream &ss, int &roomIndex);
     void handleStartGameSignal(int client_socket, std::stringstream &ss, int &roomIndex);
-    void handleMoveSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId);
     void handleResignSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId);
     void handleRoomStatus(int client_socket, int &roomIndex, std::thread::id &threadId);
     void handleRegisterSignal(int client_socket, std::stringstream &ss);
+    void handleMoveSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId);
+    void updateTurn(int roomIndex);
+    void sendTurnInfo(int client_socket, int roomIndex);
+    void handleQuestion(int client_socket, int &roomIndex, int *questionIndex);
+    void handleCheckAnswer(int client_socket, std::string ss, int &roomIndex);
 
     void initializeAccountList();
     void error(std::string message);
@@ -404,7 +414,7 @@ void ServerSocket::error(std::string message, bool isThread)
         exit(1);
 }
 
-void ServerSocket::handleClient(int client_socket)
+void ServerSocket::handleClient(int client_socket, int *count)
 {
     char buffer[RECEIVE_BUFFER_SIZE];
     std::string message;
@@ -412,7 +422,6 @@ void ServerSocket::handleClient(int client_socket)
     int roomIndex = -1;
     int bytes_received;
     std::thread::id threadId = std::this_thread::get_id();
-
     while (1)
     {
         bytes_received = recv(client_socket, buffer, RECEIVE_BUFFER_SIZE, 0);
@@ -438,11 +447,8 @@ void ServerSocket::handleClient(int client_socket)
             }
             else if (!token.compare(START_GAME_CODE))
             {
+                count = 0;
                 handleStartGameSignal(client_socket, ss, roomIndex);
-            }
-            else if (!token.compare(MOVE_CODE))
-            {
-                handleMoveSignal(client_socket, ss, roomIndex, threadId);
             }
             else if (!token.compare(READY_CODE))
             {
@@ -460,6 +466,17 @@ void ServerSocket::handleClient(int client_socket)
             else if (!token.compare(REGISTER_CODE))
             {
                 handleRegisterSignal(client_socket, ss);
+            }
+            else if (!token.compare("ANSWER"))
+            {
+                std::string token;
+                std::getline(ss, token, '\n');
+                std::cout << "Token: " << token << std::endl;
+                handleCheckAnswer(client_socket, token, roomIndex);
+            }
+            else if (!token.compare("QUESTION"))
+            {
+                handleQuestion(client_socket, roomIndex, count);
             }
             // Reset the buffer
             memset(buffer, 0, RECEIVE_BUFFER_SIZE);
@@ -507,7 +524,7 @@ void ServerSocket::handleCreateRoomSignal(int client_socket, std::stringstream &
             roomIndex = i;
             roomList[i].setRoomCode(roomCode);
             roomList[i].setRoomOccupied(true);
-            roomList[i].setOwner(threadId, token);
+            roomList[i].setOwner(threadId, token, client_socket);
             code.assign(CREATE_ROOM_CODE);
             message = code + '\n' + roomCode + '\n';
             send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
@@ -541,7 +558,7 @@ void ServerSocket::handleJoinRoomSignal(int client_socket, std::stringstream &ss
                 std::getline(ss, token, '\n');
                 std::cout << "Player: " << token << " is joining room\n";
                 roomIndex = i;
-                roomList[i].setGuest(threadId, token);
+                roomList[i].setGuest(threadId, token, client_socket);
                 code.assign(JOIN_ROOM_CODE);
                 message = code + '\n' + "1\n" + roomList[i].getOwnerName() + '\n';
                 send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
@@ -643,25 +660,11 @@ void ServerSocket::handleReadySignal(int client_socket, std::stringstream &ss, i
     code.assign(READY_CODE);
     message = code + '\n' + token + '\n';
     send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
-}
-
-void ServerSocket::handleStartGameSignal(int client_socket, std::stringstream &ss, int &roomIndex)
-{
-    std::string token, code, message;
-
-    if (roomIndex < 0)
+    // Send the same message to the owner
+    if (roomList[roomIndex].getOwnerReady())
     {
-        std::cout << "Player not in a room but sends start game request. Ignoring...\n";
-        return;
+        send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
     }
-    code.assign(START_GAME_CODE);
-    int newInt = coin_flip();
-    std::cout << "coin: " << newInt << '\n';
-    std::string playerSide = newInt ? "white" : "black";
-    message = code + '\n' + playerSide + '\n';
-    roomList[roomIndex].setGameStarting(true);
-    roomList[roomIndex].setOwnerSide(newInt);
-    send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
 }
 
 void ServerSocket::handleMoveSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId)
@@ -675,47 +678,111 @@ void ServerSocket::handleMoveSignal(int client_socket, std::stringstream &ss, in
     std::getline(ss, token, '\n');
     std::cout << token << '\n';
     moveTo = std::stoi(token);
-    if (roomList[roomIndex].isOwner(threadId))
+
+    updateTurn(roomIndex);
+    sendTurnInfo(client_socket, roomIndex);
+}
+
+std::queue<int> turnQueue;
+
+void ServerSocket::handleStartGameSignal(int client_socket, std::stringstream &ss, int &roomIndex)
+{
+    std::string token, code, message;
+    if (roomIndex < 0)
     {
-        roomList[roomIndex].setOwnerMove(moveFrom, moveTo);
+        std::cout << "Player not in a room but sends start game request. Ignoring...\n";
+        return;
     }
-    else if (roomList[roomIndex].isGuest(threadId))
+    code.assign(START_GAME_CODE);
+    std::string playerSide = roomList[roomIndex].getOwnerSide() ? "first" : "second";
+    message = code + '\n' + playerSide + '\n';
+    send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
+    send(roomList[roomIndex].getGuestID(), message.c_str(), RECEIVE_BUFFER_SIZE, 0);
+
+    // Send the same message to the guest
+    if (roomList[roomIndex].getGuestReady())
     {
-        roomList[roomIndex].setGuestMove(moveFrom, moveTo);
+        send(roomList[roomIndex].getGuestID(), message.c_str(), RECEIVE_BUFFER_SIZE, 0);
+    }
+
+    roomList[roomIndex].setGameStarting(true);
+
+    handleQuestion(client_socket, roomIndex, 0);
+    handleQuestion(roomList[roomIndex].getGuestID(), roomIndex, 0);
+}
+
+void ServerSocket::handleQuestion(int client_socket, int &roomIndex, int *questionIndex)
+{
+    std::string token, code, message;
+    // Load câu hỏi và đáp án từ file
+    std::vector<std::pair<std::string, std::string>> questions = load_questions("question.txt");
+    try
+    {
+        code = "QUESTION";
+        // Gửi câu hỏi cho client và nhận câu trả lời
+        const auto &qna = questions[*questionIndex];
+        message = code + '\n' + qna.first + "\n";
+        send(client_socket, message.c_str(), message.length(), 0);
+        send(roomList[roomIndex].getGuestID(), message.c_str(), message.length(), 0);
+        questionIndex++;
+    }
+    catch (...)
+    {
+        std::cerr << "Xảy ra lỗi trong quá trình xử lý." << std::endl;
+    }
+}
+
+void ServerSocket::handleCheckAnswer(int client_socket, std::string ss, int &roomIndex)
+{
+    std::string code, message;
+    code.assign("ANSWER");
+    std::string answer = ss;
+    std::vector<std::pair<std::string, std::string>> questions = load_questions("question.txt");
+    const auto &qna = questions[roomIndex];
+    const std::string &correct_answer = qna.second;
+
+    if (answer == correct_answer)
+    {
+        message = code + '\n' + "Correct" + "\n" + " " + '\n';
+        send(client_socket, message.c_str(), message.length(), 0);
     }
     else
     {
-        std::cout << "Can't find player to set move\n";
+        message = code + '\n' + "Wrong" + "\n" + correct_answer + '\n';
+        send(client_socket, message.c_str(), message.length(), 0);
+    }
+    updateTurn(roomIndex);
+    sendTurnInfo(client_socket, roomIndex);
+}
+
+// Function to update the turn after each move
+void ServerSocket::updateTurn(int roomIndex)
+{
+    // roomList[roomIndex].setOwnerTurn(!roomList[roomIndex].isOwnerTurn);
+}
+
+// Function to send turn information to both the owner and the guest
+void ServerSocket::sendTurnInfo(int client_socket, int roomIndex)
+{
+    std::string code = MOVE_CODE;
+    std::string message = code + '\n' + (roomList[roomIndex].isOwnerTurn ? "Your Turn" : "Opponent's Turn") + '\n';
+
+    // Send turn info to the owner
+    if (roomList[roomIndex].getOwnerReady())
+    {
+        send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
     }
 
-    code.assign(MOVE_CODE);
-    message = code + '\n' + std::to_string(moveFrom) + '\n' + std::to_string(moveTo) + '\n';
-    send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
+    // Send turn info to the guest
+    if (roomList[roomIndex].getGuestReady())
+    {
+        send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
+    }
 }
 
 void ServerSocket::handleResignSignal(int client_socket, std::stringstream &ss, int &roomIndex, std::thread::id &threadId)
 {
     std::string token, code, message;
-    if (roomIndex < 0)
-    {
-        std::cout << "Player not in a room but sends resign request. Ignoring...\n";
-        return;
-    }
-
-    if (roomList[roomIndex].isOwner(threadId))
-    {
-        roomList[roomIndex].setOwnerResign(true);
-        roomList[roomIndex].setOwnerMove(-1, -1);
-    }
-    else if (roomList[roomIndex].isGuest(threadId))
-    {
-        roomList[roomIndex].setGuestResign(true);
-        roomList[roomIndex].setGuestMove(-1, -1);
-    }
-    else
-    {
-        std::cout << "Can't find player to set move\n";
-    }
     code.assign(RESIGN_CODE);
     message = code + '\n';
     send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
@@ -723,8 +790,11 @@ void ServerSocket::handleResignSignal(int client_socket, std::stringstream &ss, 
 
 void ServerSocket::handleRoomStatus(int client_socket, int &roomIndex, std::thread::id &threadId)
 {
+    // Lock the mutex before accessing the room state
+    std::unique_lock<std::mutex> lock(roomList[roomIndex].roomMutex);
     std::string token, code, message;
-
+    // Wait for the guest to join (or other room state changes)
+    roomList[roomIndex].cvGuestJoin.wait(lock);
     if (roomList[roomIndex].getNewGuestState())
     {
         code.assign(NEW_GUEST_CODE);
@@ -742,31 +812,17 @@ void ServerSocket::handleRoomStatus(int client_socket, int &roomIndex, std::thre
     if (roomList[roomIndex].getGameStarting())
     {
         code.assign(START_GAME_CODE);
-        std::string playerSide = roomList[roomIndex].getOwnerSide() ? "white" : "black";
+        std::string playerSide = roomList[roomIndex].getOwnerSide() ? "fisrt" : "second";
         message = code + '\n' + playerSide + '\n';
         send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
         roomList[roomIndex].setGameStarting(false);
-    }
-    if (roomList[roomIndex].availableOwnerMove())
-    {
-        code.assign(MOVE_CODE);
-        message = code + '\n' + std::to_string(roomList[roomIndex].getOwnerMoveFrom()) + '\n' + std::to_string(roomList[roomIndex].getOwnerMoveTo()) + '\n';
-        send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
-        roomList[roomIndex].setOwnerMove(-1, -1);
-    }
-    if (roomList[roomIndex].availableGuestMove())
-    {
-        code.assign(MOVE_CODE);
-        message = code + '\n' + std::to_string(roomList[roomIndex].getGuestMoveFrom()) + '\n' + std::to_string(roomList[roomIndex].getGuestMoveTo()) + '\n';
-        send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
-        roomList[roomIndex].setGuestMove(-1, -1);
     }
     if (roomList[roomIndex].getNewGuestReady())
     {
         code.assign(READY_CODE);
         message = code + '\n' + std::to_string(roomList[roomIndex].getGuestReady()) + '\n';
         send(client_socket, message.c_str(), RECEIVE_BUFFER_SIZE, 0);
-        roomList[roomIndex].setNewGuestReady(false);
+        roomList[roomIndex].setNewGuestReady(true);
     }
     if (roomList[roomIndex].getOwnerResign())
     {
@@ -786,8 +842,6 @@ void ServerSocket::handleRoomStatus(int client_socket, int &roomIndex, std::thre
 
 void ServerSocket::initializeAccountList()
 {
-    // std::ifstream inputFile("users.txt");
-
     if (!inputFile)
     {
         std::cout << "Error opening the file." << std::endl;
@@ -899,6 +953,7 @@ int main()
     socklen_t sin_size = sizeof(struct sockaddr_in);
     // int client_so[MAX_CLIENT];
     std::thread threadArray[MAX_CLIENT];
+    int count = 0;
 
     while (true)
     {
@@ -916,7 +971,7 @@ int main()
             if (!threadArray[i].joinable())
             {
                 threadArray[i] = std::thread([&]()
-                                             { server_socket.handleClient(client_so); });
+                                             { server_socket.handleClient(client_so, &count); });
                 threadArray[i].detach();
                 break;
             }
